@@ -1,0 +1,6 @@
+numpy==2.1.2
+aioquic==1.2.0
+celery==5.3.6
+redis==5.2.0
+sympy==1.13.3
+aiohttp==3.11.7
