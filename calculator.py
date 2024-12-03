@@ -1,7 +1,7 @@
 from celery import Celery
 import time
 from datetime import datetime
-from calculator_server.simpson_method import Simpson
+from simpson_method import Simpson
 
 app = Celery('tasks', broker='redis://localhost:6379/0')
 app.conf.update(

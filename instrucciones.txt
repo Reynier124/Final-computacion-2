@@ -1,0 +1,3 @@
+Para inciar celery: celery -A calculator worker --loglevel=info
+
+

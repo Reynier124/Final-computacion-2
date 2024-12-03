@@ -3,80 +3,128 @@ import asyncio
 import signal
 import json
 from aiohttp import web
-from aioquic.asyncio import serve
-from aioquic.quic.configuration import QuicConfiguration
-from aioquic.asyncio.protocol import QuicConnectionProtocol
+from calculator import calculate_simpson_method
+from multiprocessing import Process, Queue
 
-def cleanup(signum, frame):
-    print("Finish the process")
-    loop = asyncio.get_running_loop()
-    loop.stop()
-    exit()
+def logger_process(queue):
+    """Proceso independiente para manejar el registro."""
+    while True:
+        log_data = queue.get()  # Esperar datos en la cola
+        if log_data is None:  # Señal de terminación
+            break
+        with open("server_log.txt", "a") as log_file:
+            log_file.write(json.dumps(log_data) + "\n")
 
-class AsyncConnection(QuicConnectionProtocol):
-    def __init__(self, host, port, a_host, a_port, config):
-        self.host = host
+class AsyncConnection:
+    def __init__(self, host_ipv4, host_ipv6, port, log_queue):
+        self.host_ipv4 = host_ipv4
+        self.host_ipv6 = host_ipv6
         self.port = port
-        self.a_host = a_host
-        self.a_port = a_port
-        self.config = config
+        self.log_queue = log_queue
         self.app = web.Application()
         self.app.router.add_post('/calculator', self.handle_post)
 
     async def start(self):
-        server = await serve(
-            self.host,
-            self.port,
-            configuration=self.config,
-            create_protocol=self.create_protocol
-        )
-        print(f"QUIC HTTP/3 server started at https://{self.host}:{self.port}")
-        #await server.wait_closed()
+        runner = web.AppRunner(self.app)
+        await runner.setup()
 
-    def create_protocol(self):
-        return self
+        # Configurar sitio para IPv4
+        self.site_ipv4 = web.TCPSite(runner, self.host_ipv4, self.port)
+        await self.site_ipv4.start()
+        print(f"HTTP server started at http://{self.host_ipv4}:{self.port} (IPv4)")
+
+        # Configurar sitio para IPv6
+        self.site_ipv6 = web.TCPSite(runner, self.host_ipv6, self.port)
+        await self.site_ipv6.start()
+        print(f"HTTP server started at http://[{self.host_ipv6}]:{self.port} (IPv6)")
+
+    async def stop(self):
+        print("Stopping HTTP server...")
+        await self.site_ipv4.stop()
+        await self.site_ipv6.stop()
 
     async def handle_post(self, request):
-        data = await request.post()
-        response_data = await self.send_json_to_server(data)
-        return web.Response(text=response_data)
+        try:
+            data = await request.json()
 
-    async def send_json_to_server(self, data):
-        server_host = self.a_host
-        server_port = self.a_port
+            # Extraer datos del JSON
+            function = data['function']
+            a = data['a']
+            b = data['b']
+            n = data['n']
+            aprox = data['aprox']
 
-        reader, writer = await asyncio.open_connection(server_host, server_port)
+            # Enviar tarea a Celery
+            task = calculate_simpson_method.delay(a, b, n, function, aprox)
 
-        json_data = json.dumps(data)
-        writer.write(json_data.encode())
-        await writer.drain()
+            # Esperar el resultado
+            list_results = task.get(timeout=10)
 
-        response = await reader.read(1024)
-        response_data = json.loads(response.decode())
+            result = list_results[0]
+            time_execution = list_results[1]
+            date = list_results[2]
 
-        writer.close()
-        await writer.wait_closed()
+            # Preparar datos para registrar en el log
+            log_data = {
+                "function": function,
+                "a": a,
+                "b": b,
+                "n": n,
+                "aprox": aprox,
+                "result": result,
+                "time_execution": time_execution,
+                "date": date,
+            }
 
-        return response_data
+            # Enviar datos al proceso de log (sin bloquear)
+            self.log_queue.put(log_data)
+
+            # Responder al cliente inmediatamente
+            response_data = {
+                "result": result,
+                "time_execution": time_execution,
+                "date": date,
+            }
+
+            return web.json_response(response_data)
+        except Exception as e:
+            return web.json_response(
+                {"error": str(e)},
+                status=500,
+            )
 
 async def main():
-    parser = argparse.ArgumentParser(description="Servidor HTTP/3 asíncrono para comunicación con el cliente")
-    parser.add_argument("--host", type=str, default="::", help="Dirección IP del servidor")
+    parser = argparse.ArgumentParser(description="Servidor HTTP asíncrono para calcular el método de Simpson")
+    parser.add_argument("--host_ipv4", type=str, default="0.0.0.0", help="Dirección IPv4 del servidor")
+    parser.add_argument("--host_ipv6", type=str, default="::", help="Dirección IPv6 del servidor")
     parser.add_argument("--port", type=int, default=8080, help="Puerto del servidor")
-    parser.add_argument("--Ahost", type=str, default="localhost", help="Dirección IP del servidor de procesamiento de imágenes")
-    parser.add_argument("--Aport", type=int, default=7373, help="Puerto del servidor de procesamiento de imágenes")
-    parser.add_argument("--certificate", type=str, required=True, help="Ruta al certificado SSL")
-    parser.add_argument("--private_key", type=str, required=True, help="Ruta a la clave privada del certificado SSL")
     args = parser.parse_args()
 
-    config = QuicConfiguration(is_client=False)
-    config.load_cert_chain(args.certificate, args.private_key)
+    HOST_IPV4, HOST_IPV6, PORT = args.host_ipv4, args.host_ipv6, args.port
 
-    HOST, PORT = args.host, args.port
-    Ahost, Aport = args.Ahost, args.Aport
-    signal.signal(signal.SIGINT, cleanup)
-    conn = AsyncConnection(HOST, PORT, Ahost, Aport, config)
-    await conn.start()
+    # Crear una cola para el registro
+    log_queue = Queue()
+    logger = Process(target=logger_process, args=(log_queue,))
+    logger.start()
+
+    conn = AsyncConnection(HOST_IPV4, HOST_IPV6, PORT, log_queue)
+
+    # Evento para bloquear el programa hasta recibir señal
+    stop_event = asyncio.Event()
+
+    # Registrar manejadores de señal
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop_event.set)
+
+    try:
+        await conn.start()
+        print("Server is running. Press Ctrl+C to stop.")
+        await stop_event.wait()  # Esperar señal de interrupción
+    finally:
+        await conn.stop()
+        log_queue.put(None)  # Señal para terminar el proceso de log
+        logger.join()
 
 if __name__ == "__main__":
     asyncio.run(main())
