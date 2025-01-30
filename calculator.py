@@ -10,7 +10,6 @@ app.conf.update(
 
 @app.task
 def calculate_simpson_method(a,b,n,f,aprox):
-    print("1.1")
     start_time = time.time()
     result, s, e = Simpson(a,b,n).calculate(f, aprox)
     end_time = time.time()

@@ -7,10 +7,9 @@ from calculator import calculate_simpson_method
 from multiprocessing import Process, Queue
 
 def logger_process(queue):
-    """Proceso independiente para manejar el registro."""
     while True:
-        log_data = queue.get()  # Esperar datos en la cola
-        if log_data is None:  # Señal de terminación
+        log_data = queue.get() 
+        if log_data is None:  
             break
         with open("server_log.txt", "a") as log_file:
             log_file.write(json.dumps(log_data) + "\n")
@@ -28,12 +27,10 @@ class AsyncConnection:
         runner = web.AppRunner(self.app)
         await runner.setup()
 
-        # Configurar sitio para IPv4
         self.site_ipv4 = web.TCPSite(runner, self.host_ipv4, self.port)
         await self.site_ipv4.start()
         print(f"HTTP server started at http://{self.host_ipv4}:{self.port} (IPv4)")
 
-        # Configurar sitio para IPv6
         self.site_ipv6 = web.TCPSite(runner, self.host_ipv6, self.port)
         await self.site_ipv6.start()
         print(f"HTTP server started at http://[{self.host_ipv6}]:{self.port} (IPv6)")
@@ -47,24 +44,20 @@ class AsyncConnection:
         try:
             data = await request.json()
 
-            # Extraer datos del JSON
             function = data['function']
             a = data['a']
             b = data['b']
             n = data['n']
             aprox = data['aprox']
 
-            # Enviar tarea a Celery
             task = calculate_simpson_method.delay(a, b, n, function, aprox)
 
-            # Esperar el resultado
             list_results = task.get(timeout=10)
 
             result = list_results[0]
             time_execution = list_results[1]
             date = list_results[2]
 
-            # Preparar datos para registrar en el log
             log_data = {
                 "function": function,
                 "a": a,
@@ -76,10 +69,8 @@ class AsyncConnection:
                 "date": date,
             }
 
-            # Enviar datos al proceso de log (sin bloquear)
             self.log_queue.put(log_data)
 
-            # Responder al cliente inmediatamente
             response_data = {
                 "result": result,
                 "time_execution": time_execution,
@@ -102,17 +93,14 @@ async def main():
 
     HOST_IPV4, HOST_IPV6, PORT = args.host_ipv4, args.host_ipv6, args.port
 
-    # Crear una cola para el registro
     log_queue = Queue()
     logger = Process(target=logger_process, args=(log_queue,))
     logger.start()
 
     conn = AsyncConnection(HOST_IPV4, HOST_IPV6, PORT, log_queue)
 
-    # Evento para bloquear el programa hasta recibir señal
     stop_event = asyncio.Event()
 
-    # Registrar manejadores de señal
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop_event.set)
@@ -120,10 +108,10 @@ async def main():
     try:
         await conn.start()
         print("Server is running. Press Ctrl+C to stop.")
-        await stop_event.wait()  # Esperar señal de interrupción
+        await stop_event.wait() 
     finally:
         await conn.stop()
-        log_queue.put(None)  # Señal para terminar el proceso de log
+        log_queue.put(None)  
         logger.join()
 
 if __name__ == "__main__":

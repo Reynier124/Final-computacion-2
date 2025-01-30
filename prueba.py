@@ -21,11 +21,11 @@ async def main():
     # Datos para las solicitudes
     test_data = [
         {
-            "function": f"x**2",
+            "function": f"x**4",
             "a": 0,
             "b": 1,
-            "n": 1000,
-            "aprox": 4
+            "n": 10,
+            "aprox": 10
         }
         for i in range(1, 11)
     ]
